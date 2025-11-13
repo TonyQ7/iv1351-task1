@@ -1,4 +1,3 @@
--- 05b_reports_versioned.sql
 SET search_path = dsp, public;
 
 -- Show that P1 vs P2 for IV1351 use different HP due to versioning
