@@ -1,14 +1,14 @@
--- 02b_schema_versioned.sql
--- Versioned model satisfying: (a) all data stored in DB (incl. the '4' limit),
--- (b) ability to keep multiple versions of course layouts and salaries,
--- (c) cost/hours reports that use the correct version per instance/allocation.
+
+-- All data stored in DB including the '4' limit)
+-- Ability to keep multiple versions of course layouts and salaries
+-- Cost/hours reports that use the correct version per instance/allocation.
 
 BEGIN;
 
 CREATE SCHEMA IF NOT EXISTS dsp;
 SET search_path = dsp, public;
 
--- ===== Reference tables =====
+-- Reference tables
 
 CREATE TABLE study_period (
   code VARCHAR(2) PRIMARY KEY,          -- 'P1' | 'P2' | 'P3' | 'P4'
@@ -19,7 +19,7 @@ CREATE TABLE job_title (
   job_title VARCHAR(80) PRIMARY KEY
 );
 
--- ===== People / Departments =====
+-- People / Departments
 
 CREATE TABLE person (
   personal_number VARCHAR(32) PRIMARY KEY,
@@ -49,7 +49,7 @@ ALTER TABLE department
   ADD CONSTRAINT department_manager_fk
   FOREIGN KEY (manager_employee_id) REFERENCES employee(employee_id) ON UPDATE CASCADE ON DELETE SET NULL;
 
--- ===== Versioned course layout =====
+-- Versioned course layout
 
 -- Identity of a course (stable attributes)
 CREATE TABLE course_layout (
@@ -82,7 +82,7 @@ CREATE TABLE course_instance (
     REFERENCES course_layout_version(course_code, version_no) ON UPDATE CASCADE ON DELETE RESTRICT
 );
 
--- ===== Teaching activities =====
+-- Teaching activities
 
 CREATE TABLE teaching_activity (
   activity_id SERIAL PRIMARY KEY,
@@ -106,7 +106,7 @@ CREATE TABLE planned_activity (
   CONSTRAINT planned_activity_unique UNIQUE (course_instance_id, activity_id)
 );
 
--- ===== Versioned salary =====
+-- Versioned salary
 
 CREATE TABLE employee_salary_history (
   salary_version_id SERIAL PRIMARY KEY,
@@ -132,7 +132,7 @@ CREATE TABLE allocation_rule (
   max_instances_per_period INT NOT NULL CHECK (max_instances_per_period >= 1)
 );
 
--- ===== Triggers =====
+-- Triggers
 
 CREATE OR REPLACE FUNCTION dsp.no_derived_in_planned()
 RETURNS TRIGGER AS $$
@@ -215,7 +215,7 @@ CREATE TRIGGER trg_manager_department_consistency
   BEFORE INSERT OR UPDATE OF manager_employee_id, department_id ON department
   FOR EACH ROW EXECUTE FUNCTION dsp.manager_must_belong_to_department();
 
--- ===== Views =====
+-- Views
 
 -- Effective hours per activity per instance, with versioned HP from the chosen layout version
 CREATE OR REPLACE VIEW v_activity_hours AS
