@@ -1,4 +1,3 @@
--- 04b_seed_versioned.sql
 -- Seeds the versioned model and demonstrates course HP changes and salary changes.
 SET search_path = dsp, public;
 
@@ -127,7 +126,7 @@ SELECT '2025-50001', activity_id, 40 FROM teaching_activity WHERE activity_name=
 INSERT INTO planned_activity(course_instance_id, activity_id, planned_hours)
 SELECT '2025-50001', activity_id, 120 FROM teaching_activity WHERE activity_name='Other';
 
--- ===== Salaries (versioned) =====
+-- Salaries (versioned)
 
 -- Version 1 salaries
 INSERT INTO employee_salary_history(employee_id, version_no, salary_hour) VALUES
