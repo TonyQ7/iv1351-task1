@@ -1,4 +1,3 @@
-
 -- All data stored in DB including the '4' limit)
 -- Ability to keep multiple versions of course layouts and salaries
 -- Cost/hours reports that use the correct version per instance/allocation.
@@ -33,7 +32,7 @@ CREATE TABLE person (
 CREATE TABLE department (
   department_id SERIAL PRIMARY KEY,
   department_name TEXT NOT NULL UNIQUE,
-  manager_employee_id INT UNIQUE  -- FK added after employee is created
+  manager_employee_id INT UNIQUE  -- FK added after employee is created (Circular dependency handling)
 );
 
 CREATE TABLE employee (
@@ -42,23 +41,22 @@ CREATE TABLE employee (
   department_id INT NOT NULL REFERENCES department(department_id) ON UPDATE CASCADE ON DELETE RESTRICT,
   job_title VARCHAR(80) NOT NULL REFERENCES job_title(job_title) ON UPDATE CASCADE ON DELETE RESTRICT,
   skill_set TEXT NOT NULL,
+  -- Supervisor is a recursive Foreign Key
   supervisor_id INT NULL REFERENCES employee(employee_id) ON UPDATE CASCADE ON DELETE SET NULL
 );
 
+-- This constraint ensures manager_employee_id IS a Foreign Key
 ALTER TABLE department
   ADD CONSTRAINT department_manager_fk
   FOREIGN KEY (manager_employee_id) REFERENCES employee(employee_id) ON UPDATE CASCADE ON DELETE SET NULL;
 
 -- Versioned course layout
 
--- Identity of a course (stable attributes)
 CREATE TABLE course_layout (
   course_code VARCHAR(16) PRIMARY KEY,
   course_name TEXT NOT NULL
 );
 
--- Versioned attributes of a course layout.
--- We use a simple integer 'version_no'. A new row = a new layout version.
 CREATE TABLE course_layout_version (
   layout_version_id SERIAL PRIMARY KEY,
   course_code VARCHAR(16) NOT NULL REFERENCES course_layout(course_code) ON UPDATE CASCADE ON DELETE RESTRICT,
@@ -69,7 +67,6 @@ CREATE TABLE course_layout_version (
   UNIQUE (course_code, version_no)
 );
 
--- A particular instance of a course in a year/period
 CREATE TABLE course_instance (
   instance_id VARCHAR(32) PRIMARY KEY,
   course_code VARCHAR(16) NOT NULL REFERENCES course_layout(course_code) ON UPDATE CASCADE ON DELETE RESTRICT,
@@ -77,7 +74,6 @@ CREATE TABLE course_instance (
   study_year  INT NOT NULL CHECK (study_year BETWEEN 2000 AND 2100),
   study_period VARCHAR(2) NOT NULL REFERENCES study_period(code) ON UPDATE CASCADE ON DELETE RESTRICT,
   num_students INT NOT NULL CHECK (num_students >= 0),
-  -- Ensure the version used belongs to this course_code
   FOREIGN KEY (course_code, layout_version_no)
     REFERENCES course_layout_version(course_code, version_no) ON UPDATE CASCADE ON DELETE RESTRICT
 );
@@ -98,12 +94,12 @@ CREATE TABLE derived_activity_coeffs (
   students_coeff NUMERIC(12,4) NOT NULL
 );
 
+-- REMOVED surrogate key. PK is now composite.
 CREATE TABLE planned_activity (
-  planned_activity_id SERIAL PRIMARY KEY,
   course_instance_id VARCHAR(32) NOT NULL REFERENCES course_instance(instance_id) ON UPDATE CASCADE ON DELETE CASCADE,
   activity_id INT NOT NULL REFERENCES teaching_activity(activity_id) ON UPDATE CASCADE ON DELETE RESTRICT,
   planned_hours NUMERIC(10,2) NOT NULL CHECK (planned_hours >= 0),
-  CONSTRAINT planned_activity_unique UNIQUE (course_instance_id, activity_id)
+  PRIMARY KEY (course_instance_id, activity_id)
 );
 
 -- Versioned salary
@@ -116,18 +112,17 @@ CREATE TABLE employee_salary_history (
   UNIQUE (employee_id, version_no)
 );
 
--- Allocations reference the salary version explicitly to guarantee historical correctness
+-- REMOVED surrogate key. PK is now composite.
 CREATE TABLE allocation (
-  allocation_id SERIAL PRIMARY KEY,
   employee_id INT NOT NULL REFERENCES employee(employee_id) ON UPDATE CASCADE ON DELETE RESTRICT,
   course_instance_id VARCHAR(32) NOT NULL REFERENCES course_instance(instance_id) ON UPDATE CASCADE ON DELETE CASCADE,
   activity_id INT NOT NULL REFERENCES teaching_activity(activity_id) ON UPDATE CASCADE ON DELETE RESTRICT,
   salary_version_id INT NOT NULL REFERENCES employee_salary_history(salary_version_id) ON UPDATE CASCADE ON DELETE RESTRICT,
   allocated_hours NUMERIC(10,2) NOT NULL CHECK (allocated_hours >= 0),
-  CONSTRAINT allocation_unique UNIQUE (employee_id, course_instance_id, activity_id)
+  PRIMARY KEY (employee_id, course_instance_id, activity_id)
 );
 
--- Rule parameter stored IN the DB (do not hardcode '4' in apps)
+-- Rule parameter stored IN the DB
 CREATE TABLE allocation_rule (
   max_instances_per_period INT NOT NULL CHECK (max_instances_per_period >= 1)
 );
@@ -148,7 +143,6 @@ CREATE TRIGGER trg_no_derived_in_planned
   BEFORE INSERT OR UPDATE ON planned_activity
   FOR EACH ROW EXECUTE FUNCTION dsp.no_derived_in_planned();
 
--- Enforce the "≤ max_instances_per_period" rule per employee and period/year
 CREATE OR REPLACE FUNCTION dsp.enforce_allocation_limit()
 RETURNS TRIGGER AS $$
 DECLARE
@@ -158,24 +152,32 @@ DECLARE
   cnt INT;
 BEGIN
   SELECT max_instances_per_period INTO lim FROM allocation_rule LIMIT 1;
-  IF lim IS NULL THEN
-    lim := 4;
-  END IF;
+  IF lim IS NULL THEN lim := 4; END IF;
 
   SELECT ci.study_period, ci.study_year INTO the_period, the_year
   FROM course_instance ci WHERE ci.instance_id = NEW.course_instance_id;
 
+  -- Count existing allocations for THIS employee in THIS period
+  -- We exclude the current row if this is an UPDATE to avoid self-counting
   SELECT COUNT(DISTINCT a.course_instance_id) INTO cnt
   FROM allocation a
   JOIN course_instance ci2 ON ci2.instance_id = a.course_instance_id
   WHERE a.employee_id = NEW.employee_id
     AND ci2.study_period = the_period
     AND ci2.study_year = the_year
-    AND (TG_OP <> 'UPDATE' OR a.allocation_id <> NEW.allocation_id);
+    AND (TG_OP = 'INSERT' OR (
+        a.employee_id IS DISTINCT FROM NEW.employee_id OR
+        a.course_instance_id IS DISTINCT FROM NEW.course_instance_id OR
+        a.activity_id IS DISTINCT FROM NEW.activity_id
+    ));
 
+  -- Check if the NEW instance is one we haven't counted yet
   IF NOT EXISTS (
       SELECT 1 FROM allocation a2
-      WHERE a2.employee_id = NEW.employee_id AND a2.course_instance_id = NEW.course_instance_id
+      WHERE a2.employee_id = NEW.employee_id 
+      AND a2.course_instance_id = NEW.course_instance_id
+      -- Exclude self if updating
+      AND (TG_OP = 'INSERT' OR a2.activity_id IS DISTINCT FROM NEW.activity_id)
   ) THEN
       cnt := cnt + 1;
   END IF;
@@ -197,7 +199,6 @@ CREATE TRIGGER trg_enforce_allocation_limit_upd
   BEFORE UPDATE OF employee_id, course_instance_id ON allocation
   FOR EACH ROW EXECUTE FUNCTION dsp.enforce_allocation_limit();
 
--- Ensure department manager belongs to department
 CREATE OR REPLACE FUNCTION dsp.manager_must_belong_to_department()
 RETURNS TRIGGER AS $$
 DECLARE emp_dept INT;
@@ -217,7 +218,6 @@ CREATE TRIGGER trg_manager_department_consistency
 
 -- Views
 
--- Effective hours per activity per instance, with versioned HP from the chosen layout version
 CREATE OR REPLACE VIEW v_activity_hours AS
 WITH base AS (
   SELECT
@@ -244,7 +244,6 @@ SELECT * FROM base
 UNION ALL
 SELECT * FROM derived;
 
--- Course instance header info including course name via course_layout
 CREATE OR REPLACE VIEW v_course_instance_header AS
 SELECT
   ci.instance_id,
@@ -271,10 +270,9 @@ FROM v_course_instance_header h
 JOIN v_activity_hours v ON v.course_instance_id = h.instance_id
 GROUP BY h.instance_id, h.course_code, h.course_name, h.study_year, h.study_period;
 
--- Cost per allocation, using the salary version stored on the allocation
+-- Updated
 CREATE OR REPLACE VIEW v_allocation_cost AS
 SELECT
-  a.allocation_id,
   a.employee_id,
   a.course_instance_id,
   a.activity_id,
@@ -291,6 +289,7 @@ FROM v_allocation_cost v
 JOIN course_instance ci ON ci.instance_id = v.course_instance_id
 GROUP BY ci.instance_id;
 
+-- Updated
 CREATE OR REPLACE VIEW v_department_cost_by_period AS
 SELECT
   d.department_id,
@@ -299,8 +298,7 @@ SELECT
   ci.study_period,
   SUM(v.cost)::NUMERIC(12,2) AS total_cost
 FROM v_allocation_cost v
-JOIN allocation a ON a.allocation_id = v.allocation_id
-JOIN employee e ON e.employee_id = a.employee_id
+JOIN employee e ON e.employee_id = v.employee_id
 JOIN department d ON d.department_id = e.department_id
 JOIN course_instance ci ON ci.instance_id = v.course_instance_id
 GROUP BY d.department_id, d.department_name, ci.study_year, ci.study_period;
