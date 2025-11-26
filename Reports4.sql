@@ -12,8 +12,8 @@ SELECT * FROM v_activity_hours ORDER BY course_instance_id, activity_name;
 -- Total hours per instance
 SELECT * FROM v_course_instance_total_hours ORDER BY instance_id;
 
--- Allocation cost (uses salary versions)
-SELECT * FROM v_allocation_cost ORDER BY course_instance_id, allocation_id;
+-- Allocation cost (ordered by composite keys since allocation_id is gone)
+SELECT * FROM v_allocation_cost ORDER BY course_instance_id, employee_id, activity_id;
 
 -- Instance total cost
 SELECT * FROM v_course_instance_cost ORDER BY instance_id;
