@@ -86,8 +86,9 @@ INSERT INTO derived_activity_coeffs(activity_id, const, hp_coeff, students_coeff
 SELECT activity_id, 32.0000, 0.0000, 0.7250 FROM teaching_activity WHERE activity_name='Examination'
 ON CONFLICT (activity_id) DO NOTHING;
 
--- Rule parameter
-INSERT INTO allocation_rule(max_instances_per_period) VALUES (4);
+-- Rule parameter (single-row pattern)
+INSERT INTO allocation_rule(id, max_instances_per_period) VALUES (1, 4)
+ON CONFLICT (id) DO NOTHING;
 
 -- Planned (non-derived) hours (same as the handout for the original two instances, plus one for IV1351 P1)
 -- IV1351 P2 (instance 2025-50273), layout version 2
