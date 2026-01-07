@@ -122,8 +122,9 @@ CREATE TABLE allocation (
   PRIMARY KEY (employee_id, course_instance_id, activity_id)
 );
 
--- Rule parameter stored IN the DB
+-- Rule parameter stored IN the DB (single-row pattern)
 CREATE TABLE allocation_rule (
+  id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
   max_instances_per_period INT NOT NULL CHECK (max_instances_per_period >= 1)
 );
 
@@ -151,33 +152,44 @@ DECLARE
   the_year INT;
   cnt INT;
 BEGIN
+  -- Get the limit from the database (Higher Grade Requirement #2)
   SELECT max_instances_per_period INTO lim FROM allocation_rule LIMIT 1;
   IF lim IS NULL THEN lim := 4; END IF;
 
+  -- Get period/year for the NEW allocation
   SELECT ci.study_period, ci.study_year INTO the_period, the_year
   FROM course_instance ci WHERE ci.instance_id = NEW.course_instance_id;
 
-  -- Count existing allocations for THIS employee in THIS period
-  -- We exclude the current row if this is an UPDATE to avoid self-counting
+  -- Count DISTINCT course instances this employee is allocated to in this period/year
+  -- For UPDATE: exclude the OLD row to avoid double-counting when moving between instances
   SELECT COUNT(DISTINCT a.course_instance_id) INTO cnt
   FROM allocation a
   JOIN course_instance ci2 ON ci2.instance_id = a.course_instance_id
   WHERE a.employee_id = NEW.employee_id
     AND ci2.study_period = the_period
     AND ci2.study_year = the_year
-    AND (TG_OP = 'INSERT' OR (
-        a.employee_id IS DISTINCT FROM NEW.employee_id OR
-        a.course_instance_id IS DISTINCT FROM NEW.course_instance_id OR
-        a.activity_id IS DISTINCT FROM NEW.activity_id
-    ));
+    AND NOT (
+        TG_OP = 'UPDATE'
+        AND a.employee_id = OLD.employee_id
+        AND a.course_instance_id = OLD.course_instance_id
+        AND a.activity_id = OLD.activity_id
+    );
 
-  -- Check if the NEW instance is one we haven't counted yet
+  -- Check if NEW.course_instance_id is already counted (employee has other activities in same instance)
+  -- If not, this allocation adds a new instance to their count
   IF NOT EXISTS (
       SELECT 1 FROM allocation a2
+      JOIN course_instance ci3 ON ci3.instance_id = a2.course_instance_id
       WHERE a2.employee_id = NEW.employee_id 
-      AND a2.course_instance_id = NEW.course_instance_id
-      -- Exclude self if updating
-      AND (TG_OP = 'INSERT' OR a2.activity_id IS DISTINCT FROM NEW.activity_id)
+        AND a2.course_instance_id = NEW.course_instance_id
+        AND ci3.study_period = the_period
+        AND ci3.study_year = the_year
+        AND NOT (
+            TG_OP = 'UPDATE'
+            AND a2.employee_id = OLD.employee_id
+            AND a2.course_instance_id = OLD.course_instance_id
+            AND a2.activity_id = OLD.activity_id
+        )
   ) THEN
       cnt := cnt + 1;
   END IF;
@@ -198,6 +210,30 @@ CREATE TRIGGER trg_enforce_allocation_limit_ins
 CREATE TRIGGER trg_enforce_allocation_limit_upd
   BEFORE UPDATE OF employee_id, course_instance_id ON allocation
   FOR EACH ROW EXECUTE FUNCTION dsp.enforce_allocation_limit();
+
+-- Validate that salary_version_id belongs to the same employee_id
+CREATE OR REPLACE FUNCTION dsp.validate_salary_employee_match()
+RETURNS TRIGGER AS $$
+DECLARE
+  salary_emp_id INT;
+BEGIN
+  SELECT employee_id INTO salary_emp_id
+  FROM employee_salary_history
+  WHERE salary_version_id = NEW.salary_version_id;
+
+  IF salary_emp_id IS NULL OR salary_emp_id <> NEW.employee_id THEN
+    RAISE EXCEPTION 'salary_version_id % does not belong to employee_id %',
+      NEW.salary_version_id, NEW.employee_id;
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_validate_salary_employee_match
+  BEFORE INSERT OR UPDATE OF employee_id, salary_version_id ON allocation
+  FOR EACH ROW EXECUTE FUNCTION dsp.validate_salary_employee_match();
+
 
 CREATE OR REPLACE FUNCTION dsp.manager_must_belong_to_department()
 RETURNS TRIGGER AS $$
