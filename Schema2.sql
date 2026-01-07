@@ -154,7 +154,9 @@ DECLARE
 BEGIN
   -- Get the limit from the database (Higher Grade Requirement #2)
   SELECT max_instances_per_period INTO lim FROM allocation_rule LIMIT 1;
-  IF lim IS NULL THEN lim := 4; END IF;
+  IF lim IS NULL THEN
+    RAISE EXCEPTION 'allocation_rule table is empty - max_instances_per_period must be configured';
+  END IF;
 
   -- Get period/year for the NEW allocation
   SELECT ci.study_period, ci.study_year INTO the_period, the_year
